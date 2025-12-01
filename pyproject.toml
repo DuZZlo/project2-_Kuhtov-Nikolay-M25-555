@@ -16,7 +16,7 @@ prompt = "^0.4.1"
 ruff = "^0.14.7"
 
 [tool.poetry.scripts]
-project = "src.primitive_db.main:main"
+database = "src.primitive_db.main:main"
 
 [tool.ruff]
 line-length = 88

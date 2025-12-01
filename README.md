@@ -1,5 +1,8 @@
 # project2-_Kuhtov-Nikolay-M25-555
 
+Демонстрация:
+https://asciinema.org/a/5oxu8J37q5VtLtdHiZXOLP9DU
+
 Общие команды:
     exit | quit - выход из программы"
     help - справочная информация

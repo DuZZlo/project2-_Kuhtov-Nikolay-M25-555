@@ -1,6 +1,6 @@
 import prompt
-import core
-import utils
+from . import core
+from . import utils
 import shlex
 
 METADATA_FILE = "db_meta.json"
