@@ -1,10 +1,54 @@
 from prettytable import PrettyTable
-import os
-import json
-from . import parser
 
+from . import parser
+from .decorators import confirm_action, handle_db_errors, log_time
+
+
+def create_cacher():
+    cache = {}
+    
+    def cache_result(key, value_func):
+        if key in cache:
+            return cache[key]
+        else:
+            result = value_func()
+            cache[key] = result
+            return result
+    
+    def clear_cache():
+        cache.clear()
+        print("Кэш очищен.")
+    
+    def get_cache_stats():
+        return {
+            'size': len(cache),
+            'keys': list(cache.keys())
+        }
+
+    def invalidate_by_prefix(prefix):
+        keys_to_remove = [k for k in list(cache.keys()) if k.startswith(prefix)]
+        for key in keys_to_remove:
+            del cache[key]
+        return len(keys_to_remove)
+    
+    def invalidate_table(table_name):
+        prefix = f"select:{table_name}:"
+        removed = invalidate_by_prefix(prefix)
+        if removed > 0:
+            print(f"Очищено {removed} записей кэша для таблицы '{table_name}'")
+    
+    cache_result.clear = clear_cache
+    cache_result.stats = get_cache_stats
+    cache_result.invalidate_table = invalidate_table
+    cache_result.invalidate_by_prefix = invalidate_by_prefix
+    
+    return cache_result
+
+query_cache = create_cacher()
+
+@handle_db_errors
 def create_table(metadata, table_name, columns):
-    """Создает новую таблицу в метаданных и создает пустой файл данных."""
+    """Создает новую таблицу в метаданных."""
     
     if table_name in metadata:
         print(f"Ошибка: Таблица '{table_name}' уже существует.")
@@ -31,19 +75,17 @@ def create_table(metadata, table_name, columns):
     print(f"Таблица '{table_name}' успешно создана.")
     return metadata
 
-
+@confirm_action("удаление таблицы")
+@handle_db_errors
 def drop_table(metadata, table_name):
     """Удаляет таблицу из метаданных."""
-    
-    if table_name not in metadata:
-        print(f"Ошибка: Таблица '{table_name}' не существует.")
-        return None
-    
+
     del metadata[table_name]
     print(f"Таблица '{table_name}' успешно удалена из метаданных.")
     return metadata
 
-
+@handle_db_errors
+@log_time
 def list_tables(metadata):
     """Выводит список всех таблиц в базе данных."""
     
@@ -57,21 +99,16 @@ def list_tables(metadata):
 
     for table_name, columns in metadata.items():
         columns_str = ", ".join(columns)
-        
         data_file = f"data/{table_name}.json"
-        
         table.add_row([table_name, columns_str, data_file])
     
     print("\nСписок таблиц:")
     print(table)
 
-
+@handle_db_errors
+@log_time
 def insert(metadata, table_name, values, table_data):
     """Добавляет новую запись в таблицу."""
-    
-    if table_name not in metadata:
-        print(f"Ошибка: Таблица '{table_name}' не существует.")
-        return None
 
     columns = metadata[table_name]
 
@@ -106,9 +143,10 @@ def insert(metadata, table_name, values, table_data):
 
     table_data.append(new_row)
     
+    query_cache.invalidate_table(table_name)
+
     print(f"Запись с ID={new_id} успешно добавлена в таблицу '{table_name}'")
     return table_data
-
 
 def _validate_value_type(value, expected_type):
     """Проверяет и преобразует значение к указанному типу."""
@@ -133,17 +171,16 @@ def _validate_value_type(value, expected_type):
     
     return False, f"Неизвестный тип: {expected_type}"
 
-
+@handle_db_errors
+@log_time
 def execute_select(metadata, table_name, where_str=None, table_data=None):
     """Выполняет SELECT запрос и выводит результаты."""
-    
-    if table_name not in metadata:
-        print(f"Ошибка: Таблица '{table_name}' не существует.")
-        return None
 
     where_clause = parser._parse_where_clause(where_str) if where_str else {}
     
-    results = select(table_data, where_clause)
+    cache_key = f"select:{table_name}:{str(sorted(where_clause.items()))}"
+    
+    results = query_cache(cache_key, lambda: select(table_data, where_clause))
     
     table = PrettyTable()
     columns = metadata[table_name]
@@ -159,11 +196,10 @@ def execute_select(metadata, table_name, where_str=None, table_data=None):
         print(table)
     else:
         print(f"\nВ таблице '{table_name}' не найдено записей, соответствующих условию.")
-        print(f"Условие: {where_clause}")
     
     return True
 
-
+@handle_db_errors
 def select(table_data, where_clause=None):
     """Выбирает записи из таблицы по условию WHERE."""
     
@@ -171,7 +207,6 @@ def select(table_data, where_clause=None):
         where_clause = {}
     
     return _apply_where_clause(table_data, where_clause)
-
 
 def _apply_where_clause(table_data, where_clause):
     """Применяет условие WHERE к данным таблицы."""
@@ -191,14 +226,11 @@ def _apply_where_clause(table_data, where_clause):
     
     return filtered_data
 
-
+@handle_db_errors
+@log_time
 def execute_update(metadata, table_name, set_str, where_str, table_data):
     """Выполняет UPDATE запрос."""
-    
-    if table_name not in metadata:
-        print(f"Ошибка: Таблица '{table_name}' не существует.")
-        return None
-    
+
     set_clause = parser._parse_set_clause(set_str)
     where_clause = parser._parse_where_clause(where_str)
     
@@ -213,9 +245,11 @@ def execute_update(metadata, table_name, set_str, where_str, table_data):
     
     updated_data = update(table_data, set_clause, where_clause, table_name)
     
+    query_cache.invalidate_table(table_name)
+
     return updated_data
 
-
+@handle_db_errors
 def update(table_data, set_clause, where_clause, table_name):
     """Обновляет записи в таблице по условию WHERE."""
     
@@ -255,14 +289,16 @@ def update(table_data, set_clause, where_clause, table_name):
     
     return table_data
 
-
+@handle_db_errors
+@confirm_action("удаление строк(и)")
+@log_time
 def execute_delete(metadata, table_name, where_str, table_data):
     """Выполняет DELETE запрос."""
-    
+
     if table_name not in metadata:
-        print(f"Ошибка: Таблица '{table_name}' не существует.")
-        return None
-    
+        # Это вызовет KeyError, который перехватит декоратор
+        raise KeyError(f"Таблица '{table_name}' не существует.")
+
     where_clause = parser._parse_where_clause(where_str)
     if not where_clause:
         print("Ошибка: WHERE clause обязателен для DELETE")
@@ -270,9 +306,11 @@ def execute_delete(metadata, table_name, where_str, table_data):
     
     new_data = delete(table_data, where_clause, table_name)
     
+    query_cache.invalidate_table(table_name)
+
     return new_data
 
-
+@handle_db_errors
 def delete(table_data, where_clause, table_name):
     """Удаляет записи из таблицы по условию WHERE."""
     
@@ -296,19 +334,14 @@ def delete(table_data, where_clause, table_name):
         else:
             ids_str = ', '.join(str(id) for id in deleted_ids)
             print(f'Записи с ID={ids_str} в таблице "{table_name}" успешно удалены.')
-    else:
-        print("Не найдено записей для удаления.")
 
     return new_data
 
-
+@handle_db_errors
+@log_time
 def show_table_info(metadata, table_name, table_data=None):
     """Показывает информацию о таблице."""
-    
-    if table_name not in metadata:
-        print(f"Ошибка: Таблица '{table_name}' не существует.")
-        return False
-    
+
     columns = metadata[table_name]
     record_count = len(table_data) if table_data else 0
     

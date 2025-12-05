@@ -1,9 +1,10 @@
-import prompt
-from . import core
-from . import utils
 import shlex
 
-METADATA_FILE = "db_meta.json"
+import prompt
+
+from . import core, utils
+
+METADATA_FILE = utils.get_metadata_path()
 
 def run():
     print("***Процесс работы с таблицей***")

@@ -20,7 +20,7 @@ ruff = "^0.14.7"
 database = "src.primitive_db.main:main"
 
 [tool.ruff]
-line-length = 88
+line-length = 110
 target-version = "py312"
 exclude = ["venv", ".venv", "dist", "__pycache__"]
 
